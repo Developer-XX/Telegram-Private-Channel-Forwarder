@@ -15,7 +15,7 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 
 from pyrogram import Client, filters
 from pyrogram.types import (
