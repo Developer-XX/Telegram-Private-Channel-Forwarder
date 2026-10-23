@@ -40,17 +40,33 @@ from helpers import get_media_type, format_progress_bar
 logger = logging.getLogger("telegram_copier.cloner")
 
 
-async def with_flood_retry(func: Callable, *args, max_retries: int = 5, **kwargs) -> Any:
-    """Execute an async Telegram call, catching and sleeping through FloodWait."""
+async def with_flood_retry(
+    func: Callable,
+    *args,
+    max_retries: int = 5,
+    on_flood_wait: Optional[Callable[[int], Any]] = None,
+    **kwargs
+) -> Any:
+    """
+    Execute an async Telegram call, catching and sleeping through FloodWait.
+    Provides automatic retry up to max_retries with detailed logging and optional user notification callback.
+    """
     for attempt in range(max_retries):
         try:
             return await func(*args, **kwargs)
         except FloodWait as e:
-            wait_time = e.value + 1
-            logger.warning(f"FloodWait received. Waiting {wait_time}s (attempt {attempt + 1}/{max_retries})")
+            wait_time = int(e.value) + 1
+            logger.warning(f"FloodWait received: Telegram requires waiting {wait_time}s (attempt {attempt + 1}/{max_retries})")
+            if on_flood_wait:
+                try:
+                    res = on_flood_wait(wait_time)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as cb_err:
+                    logger.debug(f"on_flood_wait callback error: {cb_err}")
             await asyncio.sleep(wait_time)
         except MessageNotModified:
-            # Harmless when updating status
+            # Harmless when updating status message with same content
             return None
     raise RuntimeError(f"Max FloodWait retries ({max_retries}) exceeded.")
 

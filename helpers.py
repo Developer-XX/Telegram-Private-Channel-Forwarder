@@ -14,10 +14,34 @@ from typing import Tuple, Optional, Any
 from pyrogram.types import Message
 from config import Config
 
+# In-memory fast cache for authorized admin IDs
+ADMIN_CACHE: set = set(Config.ADMIN_USER_IDS)
+
 
 def is_admin(user_id: int) -> bool:
     """Check if the given Telegram user ID is an authorized admin."""
-    return user_id in Config.ADMIN_USER_IDS
+    return user_id in ADMIN_CACHE or user_id in Config.ADMIN_USER_IDS
+
+
+def add_admin_to_cache(user_id: int) -> None:
+    """Add a user ID to the in-memory admin cache."""
+    ADMIN_CACHE.add(user_id)
+
+
+def remove_admin_from_cache(user_id: int) -> None:
+    """Remove a user ID from the in-memory admin cache."""
+    ADMIN_CACHE.discard(user_id)
+
+
+def reload_admin_cache(admin_list) -> None:
+    """Synchronize the in-memory cache with the database records."""
+    ADMIN_CACHE.clear()
+    ADMIN_CACHE.update(Config.ADMIN_USER_IDS)
+    for admin in admin_list:
+        if isinstance(admin, dict) and "user_id" in admin:
+            ADMIN_CACHE.add(admin["user_id"])
+        elif isinstance(admin, int):
+            ADMIN_CACHE.add(admin)
 
 
 def parse_chat_identifier(raw: str) -> Tuple[str, Any]:

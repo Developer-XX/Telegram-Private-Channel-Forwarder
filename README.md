@@ -156,6 +156,9 @@ Send these commands directly to your **Bot in private DM**:
 | `/remove_session` (or `/logout`) | None | Disconnect and clear the current user account session from the bot. |
 | `/session` | None | View current user session connection status and account information. |
 | `/cancel_login` | None | Abort an ongoing user session login process. |
+| `/add_admin` (or `/promote`) | `<user_id_or_@username>` | Authorize a new admin by numeric User ID or @username. |
+| `/del_admin` (or `/remove_admin`) | `<user_id_or_@username>` | Revoke admin access for a user. |
+| `/admins` (or `/admin_list`) | None | List all authorized administrators and roles. |
 | `/join` | `<link_or_username>` | Join a private/public channel using user session. |
 | `/set_target` | `<chat_id_or_link>` | Set the active target/destination channel. |
 | `/target` | None | View current target channel details and status. |

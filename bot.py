@@ -33,18 +33,24 @@ from pyrogram.errors import (
     ChatAdminRequired,
     PeerIdInvalid,
     RPCError,
+    FloodWait,
+    UsernameInvalid,
+    UsernameNotOccupied,
 )
 
 from config import Config
 from database import db
 from helpers import (
     is_admin,
+    add_admin_to_cache,
+    remove_admin_from_cache,
+    reload_admin_cache,
     parse_chat_identifier,
     format_progress_bar,
     clean_channel_title,
     get_media_type,
 )
-from cloner import MessageCloner, BatchCloner
+from cloner import MessageCloner, BatchCloner, with_flood_retry
 from session_manager import session_mgr, LoginState, mask_phone
 
 logger = logging.getLogger("telegram_copier.bot")
@@ -252,7 +258,10 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
                 InlineKeyboardButton("⚡ Toggle Live Sync", callback_data="btn_toggle_live"),
             ],
             [
+                InlineKeyboardButton("👑 Admins", callback_data="btn_admins"),
                 InlineKeyboardButton("📊 Status", callback_data="btn_status"),
+            ],
+            [
                 InlineKeyboardButton("📖 Help & Manual", callback_data="btn_help"),
             ]
         ])
@@ -269,24 +278,28 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
             "• <code>/remove_session</code> (or <code>/logout</code>) - Disconnect and remove the user session\n"
             "• <code>/session</code> - Check user session connection status & account info\n"
             "• <code>/cancel_login</code> - Abort an ongoing login process\n\n"
-            "<b>2. Joining Private Channels:</b>\n"
+            "<b>2. Administrator Management:</b>\n"
+            "• <code>/add_admin &lt;user_id_or_@username&gt;</code> - Authorize a new admin\n"
+            "• <code>/del_admin &lt;user_id_or_@username&gt;</code> - Revoke admin privileges\n"
+            "• <code>/admins</code> - List all authorized administrators\n\n"
+            "<b>3. Joining Private Channels:</b>\n"
             "• <code>/join &lt;link&gt;</code> - Join channel via invite link (<code>https://t.me/+...</code>) or username\n"
             "• Or simply paste the invite link in this chat!\n\n"
-            "<b>3. Setting Target Channel:</b>\n"
+            "<b>4. Setting Target Channel:</b>\n"
             "• <code>/set_target &lt;chat_id_or_link&gt;</code> - Set destination channel\n"
             "• <code>/target</code> - View current target\n\n"
-            "<b>4. Historical Range Copying (No Forward Tag):</b>\n"
+            "<b>5. Historical Range Copying (No Forward Tag):</b>\n"
             "• <code>/forward &lt;source_id&gt; &lt;start_id&gt; &lt;end_id&gt; [target_id]</code>\n"
             "  <i>Example:</i> <code>/forward -1001928374 1 50</code>\n"
             "  (Copies messages 1 to 50 from source to target without forward header)\n"
             "• <code>/cancel</code> - Abort an active running range copy job\n\n"
-            "<b>5. Source Channel Management:</b>\n"
+            "<b>6. Source Channel Management:</b>\n"
             "• <code>/add_source &lt;chat_id_or_link&gt;</code> - Add channel to monitored sources\n"
             "• <code>/del_source &lt;chat_id&gt;</code> - Remove a source channel\n"
             "• <code>/sources</code> - View all registered source channels\n\n"
-            "<b>6. Live Auto-Forwarding (Real-Time Cloning):</b>\n"
+            "<b>7. Live Auto-Forwarding (Real-Time Cloning):</b>\n"
             "• <code>/live on</code> or <code>/live off</code> - Toggle real-time forward\n\n"
-            "<b>7. Status & Utilities:</b>\n"
+            "<b>8. Status & Utilities:</b>\n"
             "• <code>/status</code> - Show active tasks, channels, and stats\n"
             "• <code>/dialogs</code> - List channels joined by your user session\n"
             "• <code>/clean</code> - Clean temporary cache directory"
@@ -367,6 +380,148 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
         )
 
     # -------------------------------------------------------------
+    # 2.5. ADMINISTRATOR MANAGEMENT COMMANDS
+    # -------------------------------------------------------------
+
+    @bot.on_message(filters.command(["add_admin", "promote"]) & admin_filter())
+    async def cmd_add_admin(client: Client, message: Message):
+        """Add a new authorized administrator by numeric user ID or @username."""
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            return await message.reply_text(
+                "⚠️ <b>Usage:</b> <code>/add_admin &lt;user_id_or_@username&gt;</code>\n\n"
+                "<i>Examples:</i>\n"
+                "• <code>/add_admin 123456789</code>\n"
+                "• <code>/add_admin @username</code>"
+            )
+
+        raw = parts[1].strip()
+        user_id = None
+        username = None
+        first_name = "Admin"
+
+        # Check if input is a numeric User ID
+        if raw.lstrip("-").isdigit():
+            user_id = int(raw)
+            try:
+                u = await client.get_users(user_id)
+                first_name = u.first_name or "Admin"
+                username = u.username
+            except Exception:
+                pass
+        else:
+            clean_username = raw.lstrip("@")
+            # Try to resolve via bot client
+            try:
+                u = await client.get_users(clean_username)
+                user_id = u.id
+                first_name = u.first_name or "Admin"
+                username = u.username
+            except Exception:
+                # Try via user client if bot cannot resolve username
+                if user_app and user_app.is_connected:
+                    try:
+                        u = await user_app.get_users(clean_username)
+                        user_id = u.id
+                        first_name = u.first_name or "Admin"
+                        username = u.username
+                    except FloodWait as fw:
+                        return await message.reply_text(f"⏳ <b>FloodWait:</b> Please wait {fw.value}s before looking up users.")
+                    except Exception as e:
+                        return await message.reply_text(f"❌ Could not find user <code>@{clean_username}</code>: {e}")
+                else:
+                    return await message.reply_text(
+                        f"❌ Could not resolve username <code>@{clean_username}</code>.\n"
+                        "Please provide their numeric User ID (get it from @userinfobot)."
+                    )
+
+        if not user_id:
+            return await message.reply_text("❌ Invalid User ID or Username.")
+
+        # Check if already admin
+        if is_admin(user_id):
+            return await message.reply_text(f"ℹ️ User <code>{user_id}</code> is already an authorized administrator.")
+
+        await db.add_admin(
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            added_by=message.from_user.id
+        )
+        add_admin_to_cache(user_id)
+
+        uname_str = f" (@{username})" if username else ""
+        await message.reply_text(
+            f"✅ <b>Administrator Added Successfully!</b>\n\n"
+            f"👤 <b>Name:</b> {first_name}{uname_str}\n"
+            f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"👑 <b>Added By:</b> <code>{message.from_user.id}</code>"
+        )
+
+    @bot.on_message(filters.command(["del_admin", "remove_admin", "demote"]) & admin_filter())
+    async def cmd_del_admin(client: Client, message: Message):
+        """Remove an authorized administrator by numeric user ID or @username."""
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            return await message.reply_text(
+                "⚠️ <b>Usage:</b> <code>/del_admin &lt;user_id_or_@username&gt;</code>"
+            )
+
+        raw = parts[1].strip()
+        user_id = None
+
+        if raw.lstrip("-").isdigit():
+            user_id = int(raw)
+        else:
+            clean_username = raw.lstrip("@").lower()
+            admins = await db.get_all_admins()
+            for a in admins:
+                if a.get("username") and a["username"].lower() == clean_username:
+                    user_id = a["user_id"]
+                    break
+            if not user_id:
+                try:
+                    u = await client.get_users(clean_username)
+                    user_id = u.id
+                except Exception:
+                    pass
+
+        if not user_id:
+            return await message.reply_text("❌ Could not find an administrator matching that ID or username.")
+
+        # Guard: Cannot remove initial owner from .env
+        if user_id in Config.ADMIN_USER_IDS:
+            return await message.reply_text("⚠️ <b>Forbidden:</b> Cannot remove the primary bot owner configured in <code>.env</code>.")
+
+        # Guard: Cannot remove self
+        if user_id == message.from_user.id:
+            return await message.reply_text("⚠️ <b>Forbidden:</b> You cannot remove yourself from administrators.")
+
+        removed = await db.remove_admin(user_id)
+        remove_admin_from_cache(user_id)
+
+        if removed:
+            await message.reply_text(f"🗑️ <b>Administrator Removed:</b> <code>{user_id}</code>")
+        else:
+            await message.reply_text(f"ℹ️ User <code>{user_id}</code> was not found in the administrators list.")
+
+    @bot.on_message(filters.command(["admins", "admin_list"]) & admin_filter())
+    async def cmd_admins(client: Client, message: Message):
+        """List all authorized administrators."""
+        admins = await db.get_all_admins()
+        if not admins:
+            return await message.reply_text("ℹ️ No administrators registered.")
+
+        lines = ["👑 <b>Authorized Administrators:</b>\n"]
+        for idx, a in enumerate(admins, 1):
+            u = f" (@{a['username']})" if a.get("username") else ""
+            role = " ⭐ Primary Owner" if a["user_id"] in Config.ADMIN_USER_IDS else ""
+            lines.append(f"{idx}. <b>{a['first_name']}</b>{u}{role}\n   ID: <code>{a['user_id']}</code>")
+
+        lines.append("\n<i>Manage admins with /add_admin and /del_admin</i>")
+        await message.reply_text("\n".join(lines))
+
+    # -------------------------------------------------------------
     # 3. CHANNEL JOIN & FORWARD COMMANDS
     # -------------------------------------------------------------
 
@@ -419,8 +574,10 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
         _, src_val = parse_chat_identifier(parts[1])
         source_chat_id = None
         try:
-            source_chat = await user_app.get_chat(src_val)
+            source_chat = await with_flood_retry(user_app.get_chat, src_val)
             source_chat_id = source_chat.id
+        except FloodWait as fw:
+            return await message.reply_text(f"⏳ <b>FloodWait:</b> Telegram requires waiting {fw.value}s before fetching channel info.")
         except Exception as e:
             return await message.reply_text(f"❌ Failed to find source channel <code>{parts[1]}</code>: {e}")
 
@@ -436,8 +593,10 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
         if len(parts) >= 5:
             _, tgt_val = parse_chat_identifier(parts[4])
             try:
-                target_chat = await user_app.get_chat(tgt_val)
+                target_chat = await with_flood_retry(user_app.get_chat, tgt_val)
                 target_chat_id = target_chat.id
+            except FloodWait as fw:
+                return await message.reply_text(f"⏳ <b>FloodWait:</b> Telegram requires waiting {fw.value}s before fetching channel info.")
             except Exception as e:
                 return await message.reply_text(f"❌ Failed to resolve target channel: {e}")
         else:
@@ -476,6 +635,9 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
             )
             try:
                 await status_msg.edit_text(text)
+            except FloodWait as fw:
+                logger.warning(f"Telegram Bot API FloodWait on edit_text: sleeping {fw.value}s")
+                await asyncio.sleep(fw.value + 1)
             except Exception:
                 pass
 
@@ -533,7 +695,7 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
         raw = parts[1].strip()
         kind, val = parse_chat_identifier(raw)
         try:
-            chat = await user_app.get_chat(val)
+            chat = await with_flood_retry(user_app.get_chat, val)
             await db.set_target_channel(chat.id, chat.title or "Target Channel")
             await message.reply_text(
                 f"🎯 <b>Target Channel Set Successfully!</b>\n\n"
@@ -542,6 +704,8 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
                 f"<b>Type:</b> {chat.type.name}\n\n"
                 f"All copied posts will now be sent here."
             )
+        except FloodWait as fw:
+            return await message.reply_text(f"⏳ <b>FloodWait:</b> Telegram requires waiting {fw.value}s before accessing this channel.")
         except Exception as e:
             await message.reply_text(f"❌ Failed to find or access channel <code>{raw}</code>: {e}")
 
@@ -583,7 +747,7 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
         raw = parts[1].strip()
         kind, val = parse_chat_identifier(raw)
         try:
-            chat = await user_app.get_chat(val)
+            chat = await with_flood_retry(user_app.get_chat, val)
             await db.add_source(
                 chat_id=chat.id,
                 title=chat.title or "Source Channel",
@@ -596,6 +760,8 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
                 f"<b>ID:</b> <code>{chat.id}</code>\n"
                 f"<b>Live Sync:</b> Enabled"
             )
+        except FloodWait as fw:
+            return await message.reply_text(f"⏳ <b>FloodWait:</b> Telegram requires waiting {fw.value}s before accessing this channel.")
         except Exception as e:
             await message.reply_text(f"❌ Failed to add source: {e}")
 
@@ -721,7 +887,8 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
         "start", "help", "join", "forward", "copy", "cancel", "set_target",
         "target", "add_source", "del_source", "sources", "live", "autoforward",
         "status", "chats", "dialogs", "clean", "login", "add_session",
-        "remove_session", "logout", "del_session", "session", "user", "cancel_login"
+        "remove_session", "logout", "del_session", "session", "user", "cancel_login",
+        "add_admin", "promote", "del_admin", "remove_admin", "demote", "admins", "admin_list"
     ]))
     async def on_private_text(client: Client, message: Message):
         user_id = message.from_user.id
@@ -862,6 +1029,10 @@ def setup_handlers(bot: Client, user: Optional[Client] = None):
             )
             await callback.answer()
 
+        elif data == "btn_admins":
+            await cmd_admins(client, callback.message)
+            await callback.answer()
+
         elif data == "btn_help":
             await cmd_help(client, callback.message)
             await callback.answer()
@@ -899,9 +1070,13 @@ async def handle_join_channel(client: Client, message: Message, raw_link: str):
     try:
         chat = None
         try:
-            chat = await user_app.join_chat(val)
+            chat = await with_flood_retry(user_app.join_chat, val)
+        except FloodWait as fw:
+            return await status_msg.edit_text(
+                f"⏳ <b>FloodWait Encountered:</b> Telegram requires you to wait {fw.value}s before joining more channels."
+            )
         except UserAlreadyParticipant:
-            chat = await user_app.get_chat(val)
+            chat = await with_flood_retry(user_app.get_chat, val)
         except InviteRequestSent:
             return await status_msg.edit_text(
                 "📩 <b>Join request submitted!</b>\n"
@@ -911,7 +1086,7 @@ async def handle_join_channel(client: Client, message: Message, raw_link: str):
             return await status_msg.edit_text(f"❌ <b>Invalid or expired invite link:</b> {e}")
 
         if not chat:
-            chat = await user_app.get_chat(val)
+            chat = await with_flood_retry(user_app.get_chat, val)
 
         # Build inline options
         buttons = InlineKeyboardMarkup([

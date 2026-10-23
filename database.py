@@ -58,6 +58,24 @@ class Database:
                 ON copied_history(source_chat_id, source_msg_id)
             """)
 
+            # Admins table for dynamic admin management
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    added_by INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Seed initial admins from Config.ADMIN_USER_IDS
+            for aid in Config.ADMIN_USER_IDS:
+                await db.execute("""
+                    INSERT OR IGNORE INTO admins (user_id, first_name, added_by)
+                    VALUES (?, 'Owner', 0)
+                """, (aid,))
+
             await db.commit()
 
     # --- Source Channel Management ---
@@ -235,6 +253,48 @@ class Database:
                 "source_channels": source_count,
                 "copied_messages": copied_count,
             }
+
+    # --- Dynamic Admin Management ---
+
+    async def add_admin(
+        self,
+        user_id: int,
+        username: Optional[str] = None,
+        first_name: Optional[str] = None,
+        added_by: Optional[int] = None
+    ) -> bool:
+        """Add a new authorized administrator."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO admins (user_id, username, first_name, added_by)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = COALESCE(excluded.username, admins.username),
+                    first_name = COALESCE(excluded.first_name, admins.first_name)
+            """, (user_id, username, first_name or "Admin", added_by or 0))
+            await db.commit()
+            return True
+
+    async def remove_admin(self, user_id: int) -> bool:
+        """Remove an administrator. Returns True if removed, False otherwise."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_all_admins(self) -> List[Dict[str, Any]]:
+        """Retrieve all registered administrators."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM admins ORDER BY created_at ASC") as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def is_admin_in_db(self, user_id: int) -> bool:
+        """Check if user_id exists in admins table."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,)) as cursor:
+                return await cursor.fetchone() is not None
 
 
 # Singleton instance

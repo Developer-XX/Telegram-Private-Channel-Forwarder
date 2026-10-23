@@ -51,6 +51,12 @@ async def main():
     await db.init()
     logger.info("Database initialized successfully.")
 
+    # Synchronize admin cache with database
+    from helpers import reload_admin_cache
+    db_admins = await db.get_all_admins()
+    reload_admin_cache(db_admins)
+    logger.info(f"Loaded {len(db_admins)} authorized administrator(s) from database.")
+
     # 1. Instantiate Bot Client
     bot_client = Client(
         name="bot",

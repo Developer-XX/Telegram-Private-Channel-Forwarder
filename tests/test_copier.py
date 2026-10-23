@@ -21,6 +21,9 @@ from helpers import (
     format_progress_bar,
     get_media_type,
     is_admin,
+    add_admin_to_cache,
+    remove_admin_from_cache,
+    reload_admin_cache,
     clean_channel_title,
 )
 from database import Database
@@ -87,10 +90,19 @@ def test_format_progress_bar():
 
 
 def test_is_admin():
-    """Verify admin check whitelisting."""
+    """Verify admin check whitelisting and dynamic cache updates."""
     Config.ADMIN_USER_IDS = [111, 222, 333]
+    reload_admin_cache([])
     assert is_admin(111) is True
     assert is_admin(222) is True
+    assert is_admin(999) is False
+
+    # Add dynamic admin
+    add_admin_to_cache(999)
+    assert is_admin(999) is True
+
+    # Remove dynamic admin
+    remove_admin_from_cache(999)
     assert is_admin(999) is False
 
 
@@ -185,6 +197,18 @@ async def test_database_crud():
         assert removed is True
         sources_after = await test_db.get_all_sources()
         assert len(sources_after) == 0
+
+        # Admin CRUD
+        await test_db.add_admin(user_id=777888, username="testadmin", first_name="Tester", added_by=111)
+        assert await test_db.is_admin_in_db(777888) is True
+
+        admins = await test_db.get_all_admins()
+        admin_ids = [a["user_id"] for a in admins]
+        assert 777888 in admin_ids
+
+        admin_removed = await test_db.remove_admin(777888)
+        assert admin_removed is True
+        assert await test_db.is_admin_in_db(777888) is False
 
 
 # ====================================================================
