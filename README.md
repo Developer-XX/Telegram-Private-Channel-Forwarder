@@ -241,6 +241,46 @@ docker-compose down
 
 ---
 
+## ⚙️ VPS Production Deployment with Supervisor
+
+Supervisor manages your bot as a background service on Ubuntu/Debian/CentOS, restarting it automatically if it crashes or the server reboots.
+
+### 1. Install Dependencies on VPS
+```bash
+sudo apt update && sudo apt install -y python3 python3-pip python3-venv git supervisor
+```
+
+### 2. Clone Repository & Setup Virtual Environment
+```bash
+sudo git clone <YOUR_GITHUB_REPO_URL> /opt/telegram-channel-copier
+cd /opt/telegram-channel-copier
+sudo python3 -m venv venv
+sudo ./venv/bin/pip install --upgrade pip
+sudo ./venv/bin/pip install -r requirements.txt
+```
+
+### 3. Setup Environment File
+```bash
+sudo cp .env.example .env
+sudo nano .env
+```
+*(Enter your API_ID, API_HASH, BOT_TOKEN, ADMIN_USER_IDS)*
+
+### 4. Configure Supervisor
+```bash
+sudo cp telegram-copier.conf.example /etc/supervisor/conf.d/telegram-copier.conf
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl status telegram-copier
+```
+
+### 5. Common Supervisor Commands
+- View live logs: `sudo supervisorctl tail -f telegram-copier`
+- Restart bot: `sudo supervisorctl restart telegram-copier`
+- Stop bot: `sudo supervisorctl stop telegram-copier`
+
+---
+
 ## 🧪 Automated Testing
 
 Run the test suite to verify all components:
