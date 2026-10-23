@@ -1,0 +1,48 @@
+# ==============================================================
+# Telegram Channel Copier - Git Ignore Rules
+# ==============================================================
+
+# 1. Environment variables & API credentials (NEVER commit secrets!)
+.env
+*.env
+.env.*
+!.env.example
+
+# 2. SQLite Database, data directories, and logs
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.log
+
+# 3. Telegram / Pyrogram user session files
+*.session
+*.session-journal
+
+# 4. Python cache, compiled files, and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 5. Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# 6. Temporary download and media cache
+temp/
+downloads/
+
+# 7. IDE, editor, and OS-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
