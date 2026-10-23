@@ -1,0 +1,29 @@
+[program:telegram-copier]
+# Directory where the bot is installed
+directory=/opt/telegram-channel-copier
+
+# Path to python in virtual environment and entrypoint script
+command=/opt/telegram-channel-copier/venv/bin/python main.py
+
+# System user to run the process (e.g. root or your username)
+user=root
+
+# Start automatically on system boot and restart on unexpected exit
+autostart=true
+autorestart=true
+startretries=5
+
+# Ensure all child processes are stopped/killed together on restart
+stopasgroup=true
+killasgroup=true
+
+# Log paths
+stdout_logfile=/var/log/telegram-copier.out.log
+stderr_logfile=/var/log/telegram-copier.err.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=5
+stderr_logfile_maxbytes=10MB
+stderr_logfile_backups=5
+
+# Ensure Python output is unbuffered so logs appear in real time
+environment=PYTHONUNBUFFERED="1"
